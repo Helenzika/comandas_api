@@ -1,0 +1,28 @@
+#Helen Oliveira
+# GET todos
+GET http://localhost:8000/produto/
+
+# GET um
+GET http://localhost:8000/produto/1
+
+POST http://localhost:8000/produto/
+content-type: application/json
+
+{
+ "nome": "Pastel de Carne Helen",
+ "descricao": "Pastel especial",
+ "foto": "123",
+ "valor_unitario": 12.50
+}
+
+PUT http://localhost:8000/produto/1
+content-type: application/json
+
+{
+ "nome": "Pastel de Queijo Helen",
+ "descricao": "Pastel atualizado",
+ "foto": "123",
+ "valor_unitario": 14.00
+}
+
+DELETE http://localhost:8000/produto/1
