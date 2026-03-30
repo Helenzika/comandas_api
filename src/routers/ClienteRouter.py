@@ -1,24 +1,184 @@
-#Helen Oliveira
-from fastapi import APIRouter
-from domain.entities.ClienteSchema import Cliente
+# Helen Oliveira
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from typing import List
+
+from src.domain.schemas.ClienteSchema import (
+    ClienteCreate,
+    ClienteUpdate,
+    ClienteResponse
+)
+from src.domain.schemas.AuthSchema import FuncionarioAuth
+from src.infra.orm.ClienteModel import ClienteDB
+from src.infra.database import get_db
+from src.infra.dependencies import require_group
+
 router = APIRouter()
-# Criar as rotas/endpoints: GET, POST, PUT, DELETE
-@router.get("/cliente/", tags=["Cliente"], status_code=200)
-def get_cliente():
-    return {"msg": "cliente get todos executado"}
 
-@router.get("/cliente/{id}", tags=["Cliente"], status_code=200)
-def get_cliente(id: int):
-    return {"msg": "cliente get um executado"}
+@router.get(
+    "/cliente/",
+    response_model=List[ClienteResponse],
+    tags=["Cliente"],
+    status_code=status.HTTP_200_OK
+)
+async def get_cliente(
+    db: Session = Depends(get_db),
+    current_user: FuncionarioAuth = Depends(require_group(None))
+):
+    try:
+        return db.query(ClienteDB).all()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao buscar clientes: {str(e)}"
+        )
 
-@router.post("/cliente/", tags=["Cliente"], status_code=200)
-def post_cliente(corpo: Cliente):
-    return {"msg": "cliente post executado", "nome": corpo.nome, "cpf": corpo.cpf, "telefone": corpo.telefone}
+@router.get(
+    "/cliente/{id}",
+    response_model=ClienteResponse,
+    tags=["Cliente"],
+    status_code=status.HTTP_200_OK
+)
+async def get_cliente_por_id(
+    id: int,
+    db: Session = Depends(get_db),
+    current_user: FuncionarioAuth = Depends(require_group(None))
+):
+    try:
+        cliente = db.query(ClienteDB).filter(ClienteDB.id == id).first()
+        if not cliente:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Cliente não encontrado"
+            )
+        return cliente
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao buscar cliente: {str(e)}"
+        )
 
-@router.put("/cliente/{id}", tags=["Cliente"], status_code=200)
-def put_cliente(id: int, corpo: Cliente):
-    return {"msg": "cliente put executado", "id":id, "nome": corpo.nome, "cpf": corpo.cpf, "telefone": corpo.telefone}
+@router.post(
+    "/cliente/",
+    response_model=ClienteResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Cliente"]
+)
+async def post_cliente(
+    cliente_data: ClienteCreate,
+    db: Session = Depends(get_db),
+    current_user: FuncionarioAuth = Depends(require_group([1, 3]))
+):
+    try:
+        existing_cliente = db.query(ClienteDB).filter(
+            ClienteDB.cpf == cliente_data.cpf
+        ).first()
 
-@router.delete("/cliente/{id}", tags=["Cliente"], status_code=200)
-def delete_cliente(id: int):
-    return {"msg": "cliente delete executado", "id":id}
+        if existing_cliente:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Já existe um cliente com este CPF"
+            )
+
+        novo_cliente = ClienteDB(
+            id=None,
+            nome=cliente_data.nome,
+            cpf=cliente_data.cpf,
+            telefone=cliente_data.telefone
+        )
+
+        db.add(novo_cliente)
+        db.commit()
+        db.refresh(novo_cliente)
+        return novo_cliente
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao criar cliente: {str(e)}"
+        )
+
+@router.put(
+    "/cliente/{id}",
+    response_model=ClienteResponse,
+    tags=["Cliente"],
+    status_code=status.HTTP_200_OK
+)
+async def put_cliente(
+    id: int,
+    cliente_data: ClienteUpdate,
+    db: Session = Depends(get_db),
+    current_user: FuncionarioAuth = Depends(require_group([1, 3]))
+):
+    try:
+        cliente = db.query(ClienteDB).filter(ClienteDB.id == id).first()
+        if not cliente:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Cliente não encontrado"
+            )
+
+        if cliente_data.cpf and cliente_data.cpf != cliente.cpf:
+            existing_cliente = db.query(ClienteDB).filter(
+                ClienteDB.cpf == cliente_data.cpf
+            ).first()
+            if existing_cliente:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Já existe um cliente com este CPF"
+                )
+
+        update_data = cliente_data.model_dump(exclude_unset=True)
+
+        for field, value in update_data.items():
+            setattr(cliente, field, value)
+
+        db.commit()
+        db.refresh(cliente)
+        return cliente
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao atualizar cliente: {str(e)}"
+        )
+
+@router.delete(
+    "/cliente/{id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["Cliente"]
+)
+async def delete_cliente(
+    id: int,
+    db: Session = Depends(get_db),
+    current_user: FuncionarioAuth = Depends(require_group([1]))
+):
+    try:
+        cliente = db.query(ClienteDB).filter(ClienteDB.id == id).first()
+        if not cliente:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Cliente não encontrado"
+            )
+
+        db.delete(cliente)
+        db.commit()
+        return None
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao deletar cliente: {str(e)}"
+        )
