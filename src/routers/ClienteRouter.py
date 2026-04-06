@@ -1,8 +1,9 @@
 # Helen Oliveira
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from typing import List
+from copy import deepcopy
 
 from src.domain.schemas.ClienteSchema import (
     ClienteCreate,
@@ -13,34 +14,30 @@ from src.domain.schemas.AuthSchema import FuncionarioAuth
 from src.infra.orm.ClienteModel import ClienteDB
 from src.infra.database import get_db
 from src.infra.dependencies import require_group
+from src.infra.rate_limit import limiter, get_rate_limit
+from src.services.AuditoriaService import AuditoriaService
+from slowapi.errors import RateLimitExceeded
 
 router = APIRouter()
 
-@router.get(
-    "/cliente/",
-    response_model=List[ClienteResponse],
-    tags=["Cliente"],
-    status_code=status.HTTP_200_OK
-)
+@router.get("/cliente/", response_model=List[ClienteResponse], tags=["Cliente"], status_code=status.HTTP_200_OK, summary="Listar clientes - protegida")
+@limiter.limit(get_rate_limit("moderate"))
 async def get_cliente(
+    request: Request,
     db: Session = Depends(get_db),
     current_user: FuncionarioAuth = Depends(require_group(None))
 ):
     try:
         return db.query(ClienteDB).all()
+    except RateLimitExceeded:
+        raise
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erro ao buscar clientes: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar clientes: {str(e)}")
 
-@router.get(
-    "/cliente/{id}",
-    response_model=ClienteResponse,
-    tags=["Cliente"],
-    status_code=status.HTTP_200_OK
-)
+@router.get("/cliente/{id}", response_model=ClienteResponse, tags=["Cliente"], status_code=status.HTTP_200_OK, summary="Buscar cliente por ID - protegida")
+@limiter.limit(get_rate_limit("moderate"))
 async def get_cliente_por_id(
+    request: Request,
     id: int,
     db: Session = Depends(get_db),
     current_user: FuncionarioAuth = Depends(require_group(None))
@@ -48,40 +45,27 @@ async def get_cliente_por_id(
     try:
         cliente = db.query(ClienteDB).filter(ClienteDB.id == id).first()
         if not cliente:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Cliente não encontrado"
-            )
+            raise HTTPException(status_code=404, detail="Cliente não encontrado")
         return cliente
+    except RateLimitExceeded:
+        raise
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erro ao buscar cliente: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar cliente: {str(e)}")
 
-@router.post(
-    "/cliente/",
-    response_model=ClienteResponse,
-    status_code=status.HTTP_201_CREATED,
-    tags=["Cliente"]
-)
+@router.post("/cliente/", response_model=ClienteResponse, status_code=status.HTTP_201_CREATED, tags=["Cliente"], summary="Criar cliente - protegida por grupos 1 e 3")
+@limiter.limit(get_rate_limit("restrictive"))
 async def post_cliente(
+    request: Request,
     cliente_data: ClienteCreate,
     db: Session = Depends(get_db),
     current_user: FuncionarioAuth = Depends(require_group([1, 3]))
 ):
     try:
-        existing_cliente = db.query(ClienteDB).filter(
-            ClienteDB.cpf == cliente_data.cpf
-        ).first()
-
+        existing_cliente = db.query(ClienteDB).filter(ClienteDB.cpf == cliente_data.cpf).first()
         if existing_cliente:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Já existe um cliente com este CPF"
-            )
+            raise HTTPException(status_code=400, detail="Já existe um cliente com este CPF")
 
         novo_cliente = ClienteDB(
             id=None,
@@ -93,24 +77,32 @@ async def post_cliente(
         db.add(novo_cliente)
         db.commit()
         db.refresh(novo_cliente)
+
+        AuditoriaService.registrar_acao(
+            db=db,
+            funcionario_id=current_user.id,
+            acao="CREATE",
+            recurso="CLIENTE",
+            recurso_id=novo_cliente.id,
+            dados_antigos=None,
+            dados_novos=novo_cliente,
+            request=request
+        )
+
         return novo_cliente
 
+    except RateLimitExceeded:
+        raise
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erro ao criar cliente: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Erro ao criar cliente: {str(e)}")
 
-@router.put(
-    "/cliente/{id}",
-    response_model=ClienteResponse,
-    tags=["Cliente"],
-    status_code=status.HTTP_200_OK
-)
+@router.put("/cliente/{id}", response_model=ClienteResponse, tags=["Cliente"], status_code=status.HTTP_200_OK, summary="Editar cliente - protegida por grupos 1 e 3")
+@limiter.limit(get_rate_limit("restrictive"))
 async def put_cliente(
+    request: Request,
     id: int,
     cliente_data: ClienteUpdate,
     db: Session = Depends(get_db),
@@ -119,21 +111,9 @@ async def put_cliente(
     try:
         cliente = db.query(ClienteDB).filter(ClienteDB.id == id).first()
         if not cliente:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Cliente não encontrado"
-            )
+            raise HTTPException(status_code=404, detail="Cliente não encontrado")
 
-        if cliente_data.cpf and cliente_data.cpf != cliente.cpf:
-            existing_cliente = db.query(ClienteDB).filter(
-                ClienteDB.cpf == cliente_data.cpf
-            ).first()
-            if existing_cliente:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Já existe um cliente com este CPF"
-                )
-
+        dados_antigos = deepcopy(cliente)
         update_data = cliente_data.model_dump(exclude_unset=True)
 
         for field, value in update_data.items():
@@ -141,23 +121,32 @@ async def put_cliente(
 
         db.commit()
         db.refresh(cliente)
+
+        AuditoriaService.registrar_acao(
+            db=db,
+            funcionario_id=current_user.id,
+            acao="UPDATE",
+            recurso="CLIENTE",
+            recurso_id=cliente.id,
+            dados_antigos=dados_antigos,
+            dados_novos=cliente,
+            request=request
+        )
+
         return cliente
 
+    except RateLimitExceeded:
+        raise
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erro ao atualizar cliente: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Erro ao atualizar cliente: {str(e)}")
 
-@router.delete(
-    "/cliente/{id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    tags=["Cliente"]
-)
+@router.delete("/cliente/{id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Cliente"], summary="Excluir cliente - protegida por grupo 1")
+@limiter.limit(get_rate_limit("critical"))
 async def delete_cliente(
+    request: Request,
     id: int,
     db: Session = Depends(get_db),
     current_user: FuncionarioAuth = Depends(require_group([1]))
@@ -165,20 +154,30 @@ async def delete_cliente(
     try:
         cliente = db.query(ClienteDB).filter(ClienteDB.id == id).first()
         if not cliente:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Cliente não encontrado"
-            )
+            raise HTTPException(status_code=404, detail="Cliente não encontrado")
+
+        dados_antigos = deepcopy(cliente)
 
         db.delete(cliente)
         db.commit()
+
+        AuditoriaService.registrar_acao(
+            db=db,
+            funcionario_id=current_user.id,
+            acao="DELETE",
+            recurso="CLIENTE",
+            recurso_id=id,
+            dados_antigos=dados_antigos,
+            dados_novos=None,
+            request=request
+        )
+
         return None
 
+    except RateLimitExceeded:
+        raise
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erro ao deletar cliente: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Erro ao deletar cliente: {str(e)}")
