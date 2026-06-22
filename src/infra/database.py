@@ -2,15 +2,25 @@
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
-from src.settings import STR_DATABASE
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
-engine = create_engine(
-    STR_DATABASE,
-    echo=True,
-    connect_args={"check_same_thread": False} if STR_DATABASE.startswith("sqlite") else {}
+from src.settings import STR_DATABASE, ASYNC_STR_DATABASE
+
+engine = create_engine(STR_DATABASE, echo=True)
+
+async_engine = create_async_engine(ASYNC_STR_DATABASE, echo=True)
+
+SessionLocal = sessionmaker(
+    bind=engine,
+    autocommit=False,
+    autoflush=True
 )
 
-SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+AsyncSessionLocal = async_sessionmaker(
+    bind=async_engine,
+    class_=AsyncSession,
+    expire_on_commit=False
+)
 
 Base = declarative_base()
 
@@ -18,8 +28,15 @@ async def cria_tabelas():
     Base.metadata.create_all(bind=engine)
 
 def get_db():
-    db = SessionLocal()
+    db_session = SessionLocal()
     try:
-        yield db
+        yield db_session
     finally:
-        db.close()
+        db_session.close()
+
+async def get_async_db():
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        finally:
+            await session.close()

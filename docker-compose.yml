@@ -1,0 +1,56 @@
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: comandas_mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: comandas_db
+      MYSQL_USER: comandas_user
+      MYSQL_PASSWORD: comandas_pass
+    ports:
+      - "3307:3306"
+    volumes:
+      - comandas_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    image: helenoliveira/comandas-api:latest
+    container_name: comandas_api
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+      RELOAD: "False"
+
+      DB_SGDB: mysql
+      DB_NAME: comandas_db
+      DB_HOST: db
+      DB_USER: comandas_user
+      DB_PASS: comandas_pass
+
+      SECRET_KEY: chaveSuperSecretaHelen123456
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 240
+      REFRESH_TOKEN_EXPIRE_DAYS: 7
+
+      RATE_LIMIT_CRITICAL: 5/minute
+      RATE_LIMIT_MODERATE: 100/minute
+      RATE_LIMIT_RESTRICTIVE: 20/minute
+      RATE_LIMIT_LOW: 200/minute
+      RATE_LIMIT_LIGHT: 300/minute
+      RATE_LIMIT_DEFAULT: 50/minute
+    ports:
+      - "8000:8000"
+
+volumes:
+  comandas_mysql_data:
